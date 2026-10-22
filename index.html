@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teyvat Codex · Today</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/api.js"></script>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Live now</div>
+    <h1>Current banners</h1>
+  </section>
+  <div id="banners"><div class="loading">Loading banners…</div></div>
+
+  <section class="hero" style="padding-top:34px">
+    <div class="eyebrow" id="today-label">Today</div>
+    <h1>What can I farm today?</h1>
+    <p>Talent books only drop on certain days. Each row is one book with every character who needs it. Pick a day to plan ahead. Sunday has everything.</p>
+  </section>
+
+  <div class="filters" style="margin-bottom:6px">
+    <div class="tabs" id="day-tabs" style="margin:0"></div>
+    <label class="toggle" style="margin-left:auto"><input type="checkbox" id="mine"> Only my characters</label>
+  </div>
+  <div id="rows"><div class="loading">Loading the domain schedule…</div></div>
+</main>
+
+<script>
+renderNav('home');
+
+const TODAY = gameDay();
+const INV = getInv();
+const SCHEDULES = [
+  { key: 'Monday', label: 'Mon & Thu', days: ['Monday', 'Thursday'] },
+  { key: 'Tuesday', label: 'Tue & Fri', days: ['Tuesday', 'Friday'] },
+  { key: 'Wednesday', label: 'Wed & Sat', days: ['Wednesday', 'Saturday'] },
+  { key: 'Sunday', label: 'Sunday (all)', days: ['Sunday'] },
+];
+const scheduleOf = day => SCHEDULES.find(s => s.days.includes(day)) || SCHEDULES[3];
+let selected = scheduleOf(TODAY).key;
+try { selected = sessionStorage.getItem('home-tab') || selected; } catch (e) {}
+$('#today-label').textContent = `Today is ${TODAY}`;
+const hasInv = Object.keys(INV.characters).length > 0;
+$('#mine').checked = hasInv;
+$('#mine').disabled = !hasInv;
+if (!hasInv) $('#mine').parentElement.title = 'Add characters on the My Inventory page first';
+
+let GROUPS = [], C = {};
+
+function renderTabs() {
+  $('#day-tabs').innerHTML = SCHEDULES.map(s => `
+    <button class="tab ${s.key === selected ? 'active' : ''}" data-key="${s.key}">
+      ${s.label}${scheduleOf(TODAY).key === s.key ? '<span class="dot" title="Today"></span>' : ''}
+    </button>`).join('');
+  document.querySelectorAll('#day-tabs .tab').forEach(b => b.onclick = () => {
+    selected = b.dataset.key;
+    try { sessionStorage.setItem('home-tab', selected); } catch (e) {}
+    renderTabs(); renderRows();
+  });
+}
+
+function bookRow(g) {
+  const isToday = availableOn(g.days, TODAY);
+  const mine = $('#mine').checked;
+  const chars = g.users.map(id => C.byId[id]).filter(Boolean)
+    .filter(c => !mine || INV.characters[c.id])
+    .sort((a, b) => b.rarity - a.rarity || a.name.localeCompare(b.name));
+  if (mine && !chars.length) return '';
+  return `<div class="row ${isToday ? 'today' : ''}">
+    <div class="row-head">
+      ${imgTag(itemIcon(g.topId), g.topName, 'row-icon')}
+      <div class="row-title">
+        <h3>${esc(g.name)} ${isToday ? '<span class="badge-today">Farmable now</span>' : ''}</h3>
+        <p>${esc(g.domain)} · ${esc(g.nation)}</p>
+      </div>
+      <div class="chips">${dayChips(g.days, TODAY)}</div>
+    </div>
+    <div class="card-row">${chars.map(c => characterCard(c, '', INV.characters[c.id])).join('') || '<span class="muted">No characters listed.</span>'}</div>
+  </div>`;
+}
+
+function renderRows() {
+  const rows = GROUPS.filter(g => g.kind === 'talent' && availableOn(g.days, selected)).map(bookRow).join('');
+  $('#rows').innerHTML = rows || `<div class="empty">None of your characters need books from these domains.</div>`;
+}
+$('#mine').addEventListener('input', renderRows);
+
+async function renderBanners() {
+  const [live, weapons] = await Promise.all([currentBanners(), getWeapons()]);
+  const wByName = Object.fromEntries(weapons.map(w => [norm(w.name), w]));
+  const toChar = id => C.byName[norm(id)];
+  if (!live.length) { $('#banners').innerHTML = '<div class="empty">No banner data for right now. paimon.moe may not have added the next one yet.</div>'; return; }
+  const html = [];
+  for (const b of live) {
+    const left = timeLeft(b.endsAt - Date.now());
+    const ends = new Date(b.endsAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const fiveChars = (b.featured || []).map(toChar).filter(Boolean);
+    const fiveWeapons = (b.featured || []).map(id => wByName[norm(id)]).filter(Boolean);
+    const rareChars = (b.featuredRare || []).map(toChar).filter(Boolean);
+    const label = { characters: 'Character Event Wish', weapons: 'Weapon Event Wish', chronicled: 'Chronicled Wish' }[b.type];
+    if (b.type === 'characters' || (b.type === 'chronicled' && fiveChars.length)) {
+      html.push(`<div class="banner-meta"><span class="badge-today">${esc(label)}</span> <b style="color:var(--text)">${esc(b.name)}</b> · ends ${ends} · ${left}${b.version ? ' · v' + esc(b.version) : ''}</div>
+        <div class="banner">${fiveChars.slice(0, 6).map(c => `
+          <a class="banner-card" href="characters/character.html?id=${encodeURIComponent(c.id)}">
+            ${imgTag(splashOf(c.icon), c.name, 'splash', [asset(c.icon)])}
+            <span class="ribbon">RATE UP</span>
+            <div class="info"><div class="stars">${'★'.repeat(c.rarity)}</div><h3>${esc(c.name)}</h3>
+              <div class="muted">${esc(c.element)} · ${esc(c.weapon)} · ${esc(c.nation)}</div></div>
+          </a>`).join('')}</div>
+        ${b.type === 'characters' && rareChars.length ? `<div class="banner-meta">4★ rate-up</div><div class="rare-strip">${rareChars.map(c => `<a href="characters/character.html?id=${encodeURIComponent(c.id)}" title="${esc(c.name)}">${imgTag(asset(c.icon), c.name)}</a>`).join('')}</div>` : ''}`);
+    } else if (fiveWeapons.length) {
+      html.push(`<div class="banner-meta" style="margin-top:16px"><span class="badge-today">${esc(label)}</span> <b style="color:var(--text)">${esc(b.name)}</b> · ends ${ends} · ${left}</div>
+        <div class="rare-strip weapon-strip">${fiveWeapons.map(w => `<a href="weapons/index.html?id=${encodeURIComponent(w.id)}" title="${esc(w.name)}">${imgTag(asset(w.icon), w.name)}</a><span style="margin-right:12px">${esc(w.name)}</span>`).join('')}</div>`);
+    }
+  }
+  $('#banners').innerHTML = html.join('') || '<div class="empty">No banner data for right now.</div>';
+}
+
+renderTabs();
+(async () => {
+  try {
+    C = await charLookup();
+    renderBanners().catch(e => showError($('#banners'), e));
+    GROUPS = await getDomainGroups();
+    renderRows();
+  } catch (e) { showError($('#rows'), e); }
+})();
+</script>
+</body>
+</html>

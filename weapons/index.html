@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teyvat Codex · Weapons</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="../assets/api.js"></script>
+  <style>
+    dialog { background: var(--panel); color: var(--text); border: 3px solid var(--rose); border-radius: 28px; padding: 0; width: min(600px, calc(100vw - 32px)); }
+    dialog::backdrop { background: rgba(128, 0, 31, .3); backdrop-filter: blur(2px); }
+    .wd { padding: 22px; }
+    .wd-top { display: flex; gap: 16px; align-items: center; }
+    .wd-top img, .wd-top .img-missing { width: 96px; height: 96px; border-radius: 14px; background: var(--four); padding: 6px; object-fit: contain; font-size: 30px; }
+    .wd-top.r5 img { background: var(--five); }
+    .wd h2 { font-size: 24px; }
+    .wd p { color: var(--text-soft); white-space: pre-line; }
+    .close { float: right; background: none; border: 0; color: var(--muted); font-size: 22px; cursor: pointer; }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Weapons</div>
+    <h1>Armory</h1>
+    <p>Weapon ascension materials rotate by day too. Turn on “Farmable today” to see which weapons you can ascend right now.</p>
+  </section>
+
+  <div class="filters">
+    <input id="q" type="search" placeholder="Search weapons…" autocomplete="off">
+    <select id="type"><option value="">All types</option></select>
+    <select id="rarity"><option value="">All rarities</option><option>5</option><option>4</option><option>3</option><option>2</option><option>1</option></select>
+    <label class="toggle"><input type="checkbox" id="today"> Farmable today</label>
+    <label class="toggle"><input type="checkbox" id="mine"> Only mine</label>
+    <span class="count" id="count"></span>
+  </div>
+  <div class="grid" id="grid"><div class="loading">Loading weapons…</div></div>
+  <dialog id="dlg"></dialog>
+</main>
+
+<script>
+renderNav('weapons');
+const TODAY = gameDay();
+const INV = getInv();
+const ownedCount = {};
+INV.weapons.forEach(w => { ownedCount[w.id] = (ownedCount[w.id] || 0) + 1; });
+let ALL = [], DAYS_OF = {};
+
+function render() {
+  const q = $('#q').value.toLowerCase(), type = $('#type').value, rar = $('#rarity').value;
+  const onlyToday = $('#today').checked, mine = $('#mine').checked;
+  const list = ALL.filter(w =>
+    (!q || w.name.toLowerCase().includes(q)) && (!type || w.type === type) &&
+    (!rar || String(w.rarity) === rar) && (!mine || ownedCount[w.id]) &&
+    (!onlyToday || (DAYS_OF[w.id] && availableOn(DAYS_OF[w.id], TODAY))));
+  $('#grid').innerHTML = list.map(w => `
+    <div class="card weapon r${w.rarity} ${ownedCount[w.id] ? 'is-owned' : ''}" data-id="${esc(w.id)}" tabindex="0">
+      <div class="card-art">${imgTag(asset(w.icon), w.name, 'card-img')}${ownedCount[w.id] ? `<span class="owned-badge">×${ownedCount[w.id]}</span>` : ''}</div>
+      <div class="card-name">${esc(w.name)}</div>
+    </div>`).join('') || '<p class="muted">No weapons match.</p>';
+  $('#count').textContent = `${list.length} of ${ALL.length}`;
+  document.querySelectorAll('.weapon').forEach(el => {
+    el.onclick = () => open(el.dataset.id);
+    el.onkeydown = e => { if (e.key === 'Enter') open(el.dataset.id); };
+  });
+}
+
+async function open(id) {
+  const w = ALL.find(x => x.id === id);
+  if (!w) return;
+  $('#dlg').innerHTML = `<div class="wd"><div class="loading">Loading ${esc(w.name)}…</div></div>`;
+  $('#dlg').showModal();
+  try {
+    const d = await yatta(`weapon/${id}`);
+    const affix = Object.values(d.affix || {})[0];
+    const refines = affix ? Object.values(affix.upgrade || {}) : [];
+    const ascIds = Object.keys(d.ascension || {});
+    const domainMat = ascIds.filter(k => k >= 114000 && k < 115000).sort().pop();
+    const info = domainMat ? await materialInfo(domainMat) : null;
+    const days = info ? [...new Set(info.sources.flatMap(s => s.days))] : [];
+    const domain = info?.sources.find(s => s.days.length)?.text || '';
+    const mineHere = INV.weapons.filter(x => x.id === id);
+    $('#dlg').innerHTML = `<div class="wd">
+      <button class="close" onclick="this.closest('dialog').close()" aria-label="Close">×</button>
+      <div class="wd-top r${w.rarity}">${imgTag(asset(w.icon), w.name)}
+        <div><div class="stars">${'★'.repeat(w.rarity)}</div><h2>${esc(w.name)}</h2>
+        <div class="muted">${esc(w.type)}${d.specialProp && d.specialProp !== 'None' ? ' · ' + esc(titleize(String(d.specialProp).replace('FIGHT_PROP_', '').toLowerCase())) : ''}</div></div>
+      </div>
+      ${affix ? `<h3 style="margin-top:18px;font-size:16px">${esc(affix.name)}</h3><p>${esc(gameText(refines[0] || ''))}</p>
+        ${refines.length > 1 ? `<details class="more"><summary>At refinement 5</summary><p>${esc(gameText(refines[refines.length - 1]))}</p></details>` : ''}` : ''}
+      ${gameText(d.description) ? `<p class="muted">${esc(gameText(d.description))}</p>` : ''}
+      ${ascIds.length ? `<h3 style="font-size:16px;margin-top:14px">Ascension materials</h3>
+        <div class="mats" style="margin:8px 0">${ascIds.map(k => `<span class="mat">${imgTag(itemIcon(k), d.items?.[k]?.name || k)}${esc(d.items?.[k]?.name || k)}</span>`).join('')}</div>
+        ${days.length ? `<div class="chips" style="margin:8px 0">${dayChips(days, TODAY)}</div><p class="muted">${esc(domain)}</p>` : ''}
+        <a class="maplink" href="${MAP_URL}" target="_blank" rel="noopener">Open the interactive map ↗</a>` : ''}
+      ${mineHere.length ? `<p style="margin-top:14px"><span class="badge-today">You own ${mineHere.length}</span> ${mineHere.map(x => `R${x.refinement} Lv.${x.level}`).join(', ')}</p>` : ''}
+    </div>`;
+  } catch (e) { showError($('#dlg').firstElementChild, e); }
+}
+$('#dlg').addEventListener('click', e => { if (e.target.id === 'dlg') e.target.close(); });
+
+(async () => {
+  try {
+    ALL = await getWeapons();
+    [...new Set(ALL.map(w => w.type))].sort().forEach(t => $('#type').insertAdjacentHTML('beforeend', `<option>${esc(t)}</option>`));
+    ['q', 'type', 'rarity', 'today', 'mine'].forEach(k => $('#' + k).addEventListener('input', render));
+    render();
+    const want = new URLSearchParams(location.search).get('id');
+    if (want) open(want);
+    // Which days each weapon's materials drop, for the "Farmable today" filter.
+    const groups = await getDomainGroups();
+    groups.filter(g => g.kind === 'weapon').forEach(g => g.users.forEach(w => { DAYS_OF[w] = g.days; }));
+    if ($('#today').checked) render();
+  } catch (e) { showError($('#grid'), e); }
+})();
+</script>
+</body>
+</html>

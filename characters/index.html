@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teyvat Codex · Characters</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="../assets/api.js"></script>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Characters</div>
+    <h1>Every playable character</h1>
+    <p>Open a character to see their materials, where to farm each one, and a recommended build. Gold borders are characters in your inventory.</p>
+  </section>
+
+  <div class="filters">
+    <input id="q" type="search" placeholder="Search by name…" autocomplete="off">
+    <select id="element"><option value="">All elements</option></select>
+    <select id="weapon"><option value="">All weapons</option></select>
+    <select id="nation"><option value="">All nations</option></select>
+    <select id="rarity"><option value="">All rarities</option><option value="5">5★</option><option value="4">4★</option></select>
+    <select id="owned"><option value="">Owned or not</option><option value="yes">Owned</option><option value="no">Not owned</option></select>
+    <select id="sort">
+      <option value="name">Sort: Name</option>
+      <option value="rarity">Sort: Rarity</option>
+      <option value="new">Sort: Newest</option>
+      <option value="element">Sort: Element</option>
+    </select>
+    <span class="count" id="count"></span>
+  </div>
+
+  <div class="grid" id="grid"><div class="loading">Loading characters…</div></div>
+</main>
+
+<script>
+renderNav('characters');
+const INV = getInv();
+let ALL = [];
+const F = ['q', 'element', 'weapon', 'nation', 'rarity', 'owned', 'sort'];
+
+function render() {
+  const v = Object.fromEntries(F.map(k => [k, $('#' + k).value]));
+  const list = ALL.filter(c =>
+    (!v.q || c.name.toLowerCase().includes(v.q.toLowerCase())) &&
+    (!v.element || c.element === v.element) &&
+    (!v.weapon || c.weapon === v.weapon) &&
+    (!v.nation || c.nation === v.nation) &&
+    (!v.rarity || String(c.rarity) === v.rarity) &&
+    (!v.owned || (v.owned === 'yes') === !!INV.characters[c.id]));
+  const by = {
+    name: (a, b) => a.name.localeCompare(b.name),
+    rarity: (a, b) => b.rarity - a.rarity || a.name.localeCompare(b.name),
+    new: (a, b) => b.release - a.release,
+    element: (a, b) => ELEMENTS.indexOf(a.element) - ELEMENTS.indexOf(b.element) || a.name.localeCompare(b.name),
+  };
+  list.sort(by[v.sort]);
+  $('#grid').innerHTML = list.map(c => characterCard(c, '', INV.characters[c.id])).join('') || '<p class="muted">No characters match.</p>';
+  $('#count').textContent = `${list.length} of ${ALL.length}`;
+  try { sessionStorage.setItem('char-filters', JSON.stringify(v)); } catch (e) {}
+}
+
+(async () => {
+  try {
+    ALL = await getCharacters();
+    const uniq = key => [...new Set(ALL.map(c => c[key]).filter(Boolean))];
+    const fill = (id, values) => $('#' + id).insertAdjacentHTML('beforeend', values.map(x => `<option>${esc(x)}</option>`).join(''));
+    fill('element', ELEMENTS.filter(e => uniq('element').includes(e)));
+    fill('weapon', uniq('weapon').sort());
+    fill('nation', uniq('nation').sort((a, b) => nationRank(a) - nationRank(b) || a.localeCompare(b)));
+    try {
+      const saved = JSON.parse(sessionStorage.getItem('char-filters') || '{}');
+      F.forEach(k => { if (saved[k] != null) $('#' + k).value = saved[k]; });
+    } catch (e) {}
+    F.forEach(k => $('#' + k).addEventListener('input', render));
+    render();
+  } catch (e) { showError($('#grid'), e); }
+})();
+</script>
+</body>
+</html>

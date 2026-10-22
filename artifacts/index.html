@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teyvat Codex · Artifacts</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="../assets/api.js"></script>
+  <style>
+    .set-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; display: grid; gap: 10px; }
+    .set-card .top { display: flex; gap: 12px; align-items: center; }
+    .set-card .top img, .set-card .top .img-missing { width: 60px; height: 60px; border-radius: 12px; background: var(--five); object-fit: contain; font-size: 22px; }
+    .set-card h4 { margin: 0; font-size: 16px; }
+    .bonus { font-size: 13px; color: var(--text-soft); }
+    .bonus b { color: var(--gold); font-weight: 600; margin-right: 4px; }
+    .avatars a.best img { box-shadow: 0 0 0 2px var(--gold); }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Artifacts</div>
+    <h1>Artifact sets</h1>
+    <p>Every set, its bonuses, the domain that drops it, and the characters it's recommended for. A gold ring means it's that character's top pick.</p>
+  </section>
+
+  <div class="filters">
+    <input id="q" type="search" placeholder="Search sets…" autocomplete="off">
+    <select id="rarity"><option value="5">5★ sets</option><option value="4">Up to 4★</option><option value="">All rarities</option></select>
+    <label class="toggle"><input type="checkbox" id="mine"> Used by my characters</label>
+    <span class="count" id="count"></span>
+  </div>
+  <div class="mat-cards" id="grid" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))"><div class="loading">Loading artifact sets…</div></div>
+</main>
+
+<script>
+renderNav('artifacts');
+const INV = getInv();
+let SETS = [], USERS = {};
+
+function render() {
+  const q = $('#q').value.toLowerCase(), rar = $('#rarity').value, mine = $('#mine').checked;
+  const list = SETS.filter(s =>
+    (!q || s.name.toLowerCase().includes(q) || s.bonuses.join(' ').toLowerCase().includes(q)) &&
+    (!rar || (rar === '5' ? s.maxRarity === 5 : s.maxRarity <= 4)) &&
+    (!mine || (USERS[s.key] || []).some(u => INV.characters[u.c.id])));
+  const ownedPieces = {};
+  INV.artifacts.forEach(a => { ownedPieces[a.set] = (ownedPieces[a.set] || 0) + 1; });
+  $('#grid').innerHTML = list.map(s => {
+    const users = (USERS[s.key] || []).filter(u => !mine || INV.characters[u.c.id]);
+    return `<div class="set-card">
+      <div class="top">${imgTag(relicIcon(s.icon), s.name)}
+        <div><h4>${esc(s.name)} ${ownedPieces[s.id] ? `<span class="chip">${ownedPieces[s.id]} owned</span>` : ''}</h4>
+        <div class="muted" style="font-size:13px">${'★'.repeat(s.maxRarity)}${s.domain ? ' · ' + esc(s.domain) : ''}</div></div>
+      </div>
+      ${s.bonuses.map((b, i) => `<div class="bonus"><b>${s.bonuses.length === 1 ? '1-pc' : i === 0 ? '2-pc' : '4-pc'}</b>${esc(b)}</div>`).join('')}
+      ${users.length ? `<div class="avatars">${users.map(u => `<a class="${u.best ? 'best' : ''}" href="../characters/character.html?id=${encodeURIComponent(u.c.id)}" title="${esc(u.c.name)}${u.best ? ' (top pick)' : ''}">${imgTag(asset(u.c.icon), u.c.name)}</a>`).join('')}</div>` : ''}
+    </div>`;
+  }).join('') || '<p class="muted">No sets match.</p>';
+  $('#count').textContent = `${list.length} sets`;
+}
+
+(async () => {
+  try {
+    const [sets, builds, { byName }] = await Promise.all([getArtifactSets(), getBuilds(), charLookup()]);
+    SETS = sets;
+    const known = new Set(sets.map(s => s.key));
+    // Which characters each set is recommended for (any role), and whether it's their top pick.
+    for (const [name, build] of Object.entries(builds)) {
+      const c = byName[name];
+      if (!c) continue;
+      const main = mainRole(build);
+      for (const role of Object.values(build.roles || {})) {
+        (role.artifacts || []).forEach((opt, i) => opt.forEach(k => {
+          if (!known.has(k)) return;
+          const list = USERS[k] ||= [];
+          const best = i === 0 && role === build.roles[main?.name];
+          const prev = list.find(u => u.c.id === c.id);
+          if (prev) prev.best ||= best; else list.push({ c, best });
+        }));
+      }
+    }
+    Object.values(USERS).forEach(l => l.sort((a, b) => b.best - a.best || a.c.name.localeCompare(b.c.name)));
+    ['q', 'rarity', 'mine'].forEach(k => $('#' + k).addEventListener('input', render));
+    render();
+  } catch (e) { showError($('#grid'), e); }
+})();
+</script>
+</body>
+</html>

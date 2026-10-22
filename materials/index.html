@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teyvat Codex · Domains</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="../assets/api.js"></script>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Domains</div>
+    <h1>Domain schedule</h1>
+    <p>Every talent-book and weapon-material domain, the days it's open, and who needs what it drops.</p>
+  </section>
+
+  <div class="filters">
+    <div class="tabs" id="day-tabs" style="margin:0"></div>
+    <div class="tabs" id="kind-tabs" style="margin:0 0 0 auto"></div>
+  </div>
+  <div id="out"><div class="loading">Loading the domain schedule…</div></div>
+</main>
+
+<script>
+renderNav('materials');
+const TODAY = gameDay();
+const INV = getInv();
+const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+let day = TODAY, kind = 'talent';
+try { kind = sessionStorage.getItem('dom-kind') || kind; } catch (e) {}
+let GROUPS = [], C = {}, W = {};
+
+function tabs() {
+  $('#day-tabs').innerHTML = DAYS.map(d => `<button class="tab ${d === day ? 'active' : ''}" data-d="${d}">${d.slice(0, 3)}${d === TODAY ? '<span class="dot"></span>' : ''}</button>`).join('');
+  $('#kind-tabs').innerHTML = [['talent', 'Talent books'], ['weapon', 'Weapon materials']].map(([k, l]) => `<button class="tab ${k === kind ? 'active' : ''}" data-k="${k}">${l}</button>`).join('');
+  document.querySelectorAll('[data-d]').forEach(b => b.onclick = () => { day = b.dataset.d; tabs(); render(); });
+  document.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { kind = b.dataset.k; try { sessionStorage.setItem('dom-kind', kind); } catch (e) {} tabs(); render(); });
+}
+
+function render() {
+  const list = GROUPS.filter(g => g.kind === kind && availableOn(g.days, day));
+  const nations = [...new Set(list.map(g => g.nation))].sort((a, b) => nationRank(a) - nationRank(b));
+  const ownedW = new Set(INV.weapons.map(w => w.id));
+  $('#out').innerHTML = nations.map(n => `<h2 class="section-title">${esc(n)}</h2>` + list.filter(g => g.nation === n).map(g => {
+    const users = kind === 'talent'
+      ? g.users.map(id => C.byId[id]).filter(Boolean).sort((a, b) => b.rarity - a.rarity || a.name.localeCompare(b.name))
+        .map(c => `<a href="../characters/character.html?id=${encodeURIComponent(c.id)}" title="${esc(c.name)}${INV.characters[c.id] ? ' (owned)' : ''}">${imgTag(asset(c.icon), c.name, INV.characters[c.id] ? 'mine' : '')}</a>`)
+      : g.users.map(id => W[id]).filter(w => w && w.rarity >= 3).sort((a, b) => b.rarity - a.rarity || a.name.localeCompare(b.name))
+        .map(w => `<a href="../weapons/index.html?id=${encodeURIComponent(w.id)}" title="${esc(w.name)}">${imgTag(asset(w.icon), w.name, ownedW.has(w.id) ? 'mine' : '')}</a>`);
+    return `<div class="row ${availableOn(g.days, TODAY) ? 'today' : ''}">
+      <div class="row-head">
+        ${imgTag(itemIcon(g.topId), g.topName, 'row-icon')}
+        <div class="row-title"><h3>${esc(g.name)}</h3><p>${esc(g.domain)} domain</p></div>
+        <div class="chips">${dayChips(g.days, TODAY)}</div>
+      </div>
+      <div class="mats" style="margin-bottom:12px">${g.rewardIds.slice().sort().map(id => `<span class="mat">${imgTag(itemIcon(id), '')}</span>`).join('')}</div>
+      <div class="avatars">${users.join('') || '<span class="muted">Nobody listed.</span>'}</div>
+    </div>`;
+  }).join('')).join('') || '<div class="empty">Nothing on this day.</div>';
+}
+
+tabs();
+(async () => {
+  try {
+    const [groups, lookup, weapons] = await Promise.all([getDomainGroups(), charLookup(), getWeapons()]);
+    GROUPS = groups; C = lookup; W = Object.fromEntries(weapons.map(w => [w.id, w]));
+    render();
+  } catch (e) { showError($('#out'), e); }
+})();
+</script>
+<style>.avatars img.mine { border-color: var(--gold) !important; box-shadow: 0 0 0 2px var(--gold); }</style>
+</body>
+</html>

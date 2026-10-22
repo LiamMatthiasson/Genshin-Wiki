@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teyvat Codex · Character</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="../assets/api.js"></script>
+</head>
+<body>
+<main>
+  <a class="back" href="index.html">← All characters</a>
+  <div id="page"><div class="loading">Loading character…</div></div>
+</main>
+
+<script>
+renderNav('characters');
+const id = new URLSearchParams(location.search).get('id') || '';
+const TODAY = gameDay();
+const INV = getInv();
+const owned = INV.characters[id] || null;
+const MORA = 202;
+
+const add = (bag, items, times = 1) => Object.entries(items || {}).forEach(([k, v]) => { bag[k] = (bag[k] || 0) + v * times; });
+
+function matChip(itemId, qty, items, showHave = false) {
+  const it = items[itemId] || { name: itemId == MORA ? 'Mora' : 'Item ' + itemId };
+  const have = INV.materials[norm(it.name)];
+  const hn = showHave && have != null ? `<span class="have-need ${have >= qty ? 'ok' : 'short'}">(have ${fmt(have)})</span>` : '';
+  return `<span class="mat" title="${esc(it.name)}">${imgTag(itemIcon(itemId), it.name)}${esc(it.name)} <span class="qty">×${fmt(qty)}</span>${hn}</span>`;
+}
+
+function whereCard(itemId, info, items, need) {
+  const name = info?.name || items[itemId]?.name || 'Unknown item';
+  const days = (info?.sources || []).flatMap(s => s.days);
+  const today = days.length && availableOn(days, TODAY);
+  const lines = (info?.sources || []).slice(0, 5).map(s => `<li>${esc(s.text)}${s.days.length ? ` <span class="muted">(${s.days.map(d => d.slice(0, 3)).join(', ')})</span>` : ''}</li>`).join('');
+  return `<div class="where ${today ? 'today' : ''}">
+    ${imgTag(itemIcon(itemId), name)}
+    <div>
+      <div class="cat">${esc(info?.type || 'Material')} ${today ? '<span class="badge-today">Today</span>' : ''}</div>
+      <h4>${esc(name)}</h4>
+      ${days.length ? `<div class="chips" style="margin:6px 0">${dayChips([...new Set(days)], TODAY)}</div>` : ''}
+      ${lines ? `<ul>${lines}</ul>` : '<p class="muted" style="font-size:13px;margin:6px 0">No source listed.</p>'}
+      ${need ? `<div class="total">${need}</div>` : ''}
+      <a class="maplink" href="${MAP_URL}" target="_blank" rel="noopener">${info?.hasMap ? 'Shown on the interactive map ↗' : 'Open the interactive map ↗'}</a>
+    </div>
+  </div>`;
+}
+
+function buildSection(build, sets, weapons) {
+  if (!build) return `<div class="empty">No recommended build for this character yet. paimon.moe's build list covers about 70 characters.</div>`;
+  const setByKey = Object.fromEntries(sets.map(s => [s.key, s]));
+  const setByNorm = Object.fromEntries(sets.map(s => [norm(s.key), s]));
+  const wByName = Object.fromEntries(weapons.map(w => [norm(w.name), w]));
+  const pill = key => {
+    const s = setByKey[key] || setByNorm[norm(key)];
+    return s ? `<span class="set-pill">${imgTag(relicIcon(s.icon), s.name)}${esc(s.name)}</span>` : `<span class="set-pill"><span class="chip">${esc(setLabel(key))}</span></span>`;
+  };
+  const roles = Object.entries(build.roles || {}).sort((a, b) => (b[1].recommended ? 1 : 0) - (a[1].recommended ? 1 : 0));
+  return roles.map(([name, r]) => `<div class="panel build" style="margin-bottom:14px">
+    <div class="build-role"><h3>${esc(name)}</h3>${r.recommended ? '<span class="badge-today">Recommended</span>' : ''}</div>
+    <div>
+      <div class="eyebrow" style="margin-bottom:8px">Artifact sets (best first)</div>
+      <div class="set-options">${(r.artifacts || []).map((opt, i) => `<div class="set-option"><span class="rank">${i + 1}</span>
+        ${opt.map(pill).join('<span class="muted">+</span>')}
+        <span class="muted" style="font-size:13px">${opt.length === 1 ? '4-piece' : opt.length === 2 ? '2-piece each' : 'any 2 of these'}</span></div>`).join('')}</div>
+    </div>
+    <div class="stat-grid">
+      ${['sands', 'goblet', 'circlet'].map(s => `<div class="stat-box"><b>${SLOT_LABEL[s]}</b>${esc((r.mainStats?.[s] || []).map(fixStat).join(' / ') || '—')}</div>`).join('')}
+      <div class="stat-box"><b>Substats</b>${esc((r.subStats || []).map(fixStat).join(' › '))}</div>
+      <div class="stat-box"><b>Talent priority</b>${esc((r.talent || []).join(' › ') || '—')}</div>
+    </div>
+    ${(r.weapons || []).length ? `<div><div class="eyebrow" style="margin-bottom:8px">Weapons</div><div class="mats">${r.weapons.map(w => {
+      const m = wByName[norm(w.id)];
+      const nm = m ? m.name : titleize(w.id);
+      return `<a class="mat" style="text-decoration:none" href="../weapons/index.html?id=${m ? encodeURIComponent(m.id) : ''}">${m ? imgTag(asset(m.icon), nm) : ''}${esc(nm)}${w.refine ? ` <span class="qty">R${w.refine.join('/')}</span>` : ''}</a>`;
+    }).join('')}</div></div>` : ''}
+    ${r.tip ? `<p class="note"><b>Tip:</b> ${esc(gameText(r.tip))}</p>` : ''}
+    ${r.note ? `<details class="more"><summary>Notes</summary><p class="note">${esc(gameText(r.note))}</p></details>` : ''}
+  </div>`).join('');
+}
+
+(async () => {
+  const page = $('#page');
+  if (!id) { page.innerHTML = '<div class="error">No character chosen. Go back and pick one.</div>'; return; }
+  try {
+    const [d, { byId }, builds, sets, weapons] = await Promise.all([
+      yatta(`avatar/${id}`), charLookup(), getBuilds(), getArtifactSets(), getWeapons(),
+    ]);
+    const c = byId[id] || { name: d.name, baseName: d.name, element: ELEMENT[d.element], weapon: WEAPON[d.weaponType], nation: REGION[d.region] || 'Other', rarity: d.rank, icon: d.icon };
+    document.title = `Teyvat Codex · ${c.name}`;
+    const items = d.items || {};
+
+    // Ascension: one row per ascension phase.
+    const promotes = (d.upgrade?.promote || []);
+    const ascRows = promotes.map((p, i) => ({ phase: p.promoteLevel, at: promotes[i - 1]?.unlockMaxLevel, cost: p.costItems, mora: p.coinCost })).filter(r => r.cost);
+    const ascTotal = {};
+    ascRows.forEach(r => { add(ascTotal, r.cost); ascTotal[MORA] = (ascTotal[MORA] || 0) + (r.mora || 0); });
+
+    // Talents: the three levelable ones, in order normal attack, skill, burst.
+    const levelable = Object.entries(d.talent || {}).filter(([, t]) => t.promote && Object.keys(t.promote).length)
+      .sort((a, b) => Number(a[0]) - Number(b[0])).map(([, t]) => t).slice(0, 3);
+    const talentCost = (t, from) => {
+      const bag = {};
+      for (let lv = from + 1; lv <= 10; lv++) { const p = t.promote[lv]; if (p) { add(bag, p.costItems); bag[MORA] = (bag[MORA] || 0) + (p.coinCost || 0); } }
+      return bag;
+    };
+    const talTotal = {};
+    levelable.forEach(t => add(talTotal, talentCost(t, 1)));
+
+    // What's still needed, based on your inventory (or everything if you don't own them).
+    const need = {};
+    ascRows.filter(r => !owned || r.phase > (owned.ascension || 0)).forEach(r => { add(need, r.cost); need[MORA] = (need[MORA] || 0) + (r.mora || 0); });
+    const curTal = owned ? [owned.talent?.auto || 1, owned.talent?.skill || 1, owned.talent?.burst || 1] : [1, 1, 1];
+    levelable.forEach((t, i) => add(need, talentCost(t, curTal[i])));
+
+    const allIds = [...new Set([...Object.keys(ascTotal), ...Object.keys(talTotal)])].filter(k => k != MORA);
+    const infos = Object.fromEntries(await Promise.all(allIds.map(async k => [k, await materialInfo(k)])));
+    const rankOf = k => { const days = (infos[k]?.sources || []).some(s => s.days.length); return days ? 0 : /Specialty/.test(infos[k]?.type) ? 1 : 2; };
+    allIds.sort((a, b) => rankOf(a) - rankOf(b) || (items[b]?.rank || 0) - (items[a]?.rank || 0));
+    const needText = k => [ascTotal[k] ? `${fmt(ascTotal[k])} for ascension` : '', talTotal[k] ? `${fmt(talTotal[k])} for all talents` : '',
+      owned ? `${fmt(need[k] || 0)} still needed` : ''].filter(Boolean).join(' · ');
+
+    const book = allIds.map(k => infos[k]).find(i => i && /Talent/.test(i.type) && i.sources.some(s => s.days.length));
+    const bookDays = book ? [...new Set(book.sources.flatMap(s => s.days))] : [];
+    const bookToday = bookDays.length && availableOn(bookDays, TODAY);
+    const f = d.fetter || {};
+    const birthday = d.birthday && d.birthday[0] ? new Date(2000, d.birthday[0] - 1, d.birthday[1]).toLocaleDateString(undefined, { month: 'long', day: 'numeric' }) : '';
+    const build = builds[norm(c.baseName)];
+    const talentsAll = Object.values(d.talent || {});
+    const consts = Object.values(d.constellation || {});
+
+    page.innerHTML = `
+      <section class="char-hero ${elemClass(c.element)}">
+        ${imgTag(splashOf(d.icon), c.name, 'splash', [asset(d.icon)])}
+        <div class="info">
+          <div class="stars">${'★'.repeat(c.rarity || 0)}</div>
+          <h1>${esc(c.name)}</h1>
+          <div class="title-line">${esc(f.title || '')}</div>
+          <div class="facts">
+            <span class="fact"><b>Element</b>${esc(c.element)}</span>
+            <span class="fact"><b>Weapon</b>${esc(c.weapon)}</span>
+            <span class="fact"><b>Nation</b>${esc(c.nation)}</span>
+            ${f.native ? `<span class="fact"><b>Affiliation</b>${esc(f.native)}</span>` : ''}
+            ${birthday ? `<span class="fact"><b>Birthday</b>${esc(birthday)}</span>` : ''}
+            ${f.constellation ? `<span class="fact"><b>Constellation</b>${esc(f.constellation)}</span>` : ''}
+          </div>
+          <p class="desc">${esc(gameText(f.detail || ''))}</p>
+          ${owned ? `<div class="facts"><span class="fact" style="border-color:var(--gold)"><b>You own</b>Lv. ${owned.level} · C${owned.constellation || 0} · Talents ${curTal.join('/')}</span></div>`
+            : `<a class="btn small" href="../inventory/index.html?add=${encodeURIComponent(id)}">+ Add to my inventory</a>`}
+        </div>
+      </section>
+
+      ${book ? `<div class="row ${bookToday ? 'today' : ''}" style="margin-top:18px">
+        <div class="row-head">
+          ${imgTag(itemIcon(book.id), book.name, 'row-icon')}
+          <div class="row-title">
+            <h3>${bookToday ? `Farm ${esc(book.name.replace(/^\w+ (of|to) /, ''))} books today` : `${esc(book.name.replace(/^\w+ (of|to) /, ''))} books aren't available today`}</h3>
+            <p>${esc(book.sources.find(s => s.days.length)?.text || '')} · Today is ${TODAY}</p>
+          </div>
+          <div class="chips">${dayChips(bookDays, TODAY)}</div>
+        </div>
+      </div>` : ''}
+
+      <h2 class="section-title">Recommended build <small>from paimon.moe</small></h2>
+      ${buildSection(build, sets, weapons)}
+
+      ${owned ? `<h2 class="section-title">Still needed <small>from your level and talents to max</small></h2>
+      <div class="panel"><div class="mats">${Object.entries(need).filter(([, v]) => v > 0).sort((a, b) => (a[0] == MORA) - (b[0] == MORA)).map(([k, v]) => matChip(k, v, items, true)).join('') || '<span class="muted">Nothing. This character is fully built!</span>'}</div>
+      ${Object.keys(INV.materials).length ? '' : '<p class="muted" style="font-size:13px;margin:10px 0 0">Import a GOOD file on My Inventory to see how many of each you already have.</p>'}</div>` : ''}
+
+      <h2 class="section-title">Ascension materials <small>Levels 20 → 90</small></h2>
+      <div class="panel table-wrap">
+        <table class="asc">
+          <thead><tr><th>Ascend at</th><th>Materials</th></tr></thead>
+          <tbody>
+            ${ascRows.map(r => `<tr><td class="lvl">Lv. ${r.at || '?'}</td>
+              <td><div class="mats">${Object.entries(r.cost).map(([k, v]) => matChip(k, v, items)).join('')}${r.mora ? matChip(MORA, r.mora, items) : ''}</div></td></tr>`).join('')}
+            <tr><td class="lvl">Total</td><td><div class="mats">${Object.entries(ascTotal).sort((a, b) => (a[0] == MORA) - (b[0] == MORA)).map(([k, v]) => matChip(k, v, items)).join('')}</div></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 class="section-title">Talent materials <small>All three talents, level 1 → 10</small></h2>
+      <div class="panel"><div class="mats">${Object.entries(talTotal).sort((a, b) => (a[0] == MORA) - (b[0] == MORA)).map(([k, v]) => matChip(k, v, items)).join('')}</div></div>
+
+      <h2 class="section-title">Where to find everything</h2>
+      <div class="where-list">${allIds.map(k => whereCard(k, infos[k], items, needText(k))).join('')}</div>
+
+      <h2 class="section-title">Talents</h2>
+      <div class="talents">${talentsAll.map(t => `<div class="talent">
+        ${imgTag(asset(t.icon), t.name)}
+        <div><div class="kind">${['Active talent', 'Elemental Burst', 'Passive'][t.type] || ''}</div><h4>${esc(t.name)}</h4>
+        <details class="more"><summary>Description</summary><p>${esc(gameText(t.description))}</p></details></div></div>`).join('')}</div>
+
+      <h2 class="section-title">Constellations</h2>
+      <div class="talents">${consts.map((t, i) => `<div class="talent">
+        ${imgTag(asset(t.icon), t.name)}
+        <div><div class="kind">C${i + 1}</div><h4>${esc(t.name)}</h4>
+        <details class="more"><summary>Description</summary><p>${esc(gameText(t.description))}</p></details></div></div>`).join('')}</div>`;
+  } catch (e) { showError(page, e); }
+})();
+</script>
+</body>
+</html>

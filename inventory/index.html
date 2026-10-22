@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teyvat Codex · My Inventory</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="../assets/api.js"></script>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="eyebrow">My Inventory</div>
+    <h1>Your account</h1>
+    <p>Add what you own by hand, or import a GOOD file from an inventory scanner. Everything is saved in this browser only, so use Export to keep a backup.</p>
+  </section>
+
+  <div class="tabs inv-tabs" id="tabs"></div>
+  <div id="out"><div class="loading">Loading…</div></div>
+</main>
+
+<script>
+renderNav('inventory');
+let INV = getInv();
+let C = {}, WEAPONS = [], SETS = [], W = {}, S = {};
+const TABS = [['plan', 'Farming plan'], ['chars', 'Characters'], ['weapons', 'Weapons'], ['artifacts', 'Artifacts'], ['io', 'Import / Export']];
+let tab = Object.keys(INV.characters).length ? 'plan' : 'io';
+try { tab = sessionStorage.getItem('inv-tab') || tab; } catch (e) {}
+const params = new URLSearchParams(location.search);
+if (params.get('add')) tab = 'chars';
+
+function save() { saveInv(INV); }
+function setTab(t) { tab = t; try { sessionStorage.setItem('inv-tab', t); } catch (e) {} render(); }
+function tabs() {
+  const n = { chars: Object.keys(INV.characters).length, weapons: INV.weapons.length, artifacts: INV.artifacts.length };
+  $('#tabs').innerHTML = TABS.map(([k, l]) => `<button class="tab ${k === tab ? 'active' : ''}" data-t="${k}">${l}${n[k] ? ` <span class="muted">${n[k]}</span>` : ''}</button>`).join('');
+  document.querySelectorAll('#tabs .tab').forEach(b => b.onclick = () => setTab(b.dataset.t));
+}
+const charName = id => C.byId[id]?.name || '—';
+const ownedOptions = sel => `<option value="">Not equipped</option>` + Object.keys(INV.characters).map(id => C.byId[id]).filter(Boolean)
+  .sort((a, b) => a.name.localeCompare(b.name)).map(c => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+const ascFromLevel = lv => lv > 80 ? 6 : lv > 70 ? 5 : lv > 60 ? 4 : lv > 50 ? 3 : lv > 40 ? 2 : lv > 20 ? 1 : 0;
+const num = (v, lo, hi) => Math.max(lo, Math.min(hi, parseInt(v, 10) || lo));
+
+/* ---------- farming plan ---------- */
+async function renderPlan(out) {
+  if (!Object.keys(INV.characters).length) {
+    out.innerHTML = `<div class="empty">${mascot()}Add some characters first (Characters tab or Import), and I'll tell you which artifact domains to farm!</div>`;
+    return;
+  }
+  out.innerHTML = '<div class="loading">Working out your plan…</div>';
+  const { plans, domains } = await farmingPlan(INV);
+  const pill = s => `<span class="set-pill">${imgTag(relicIcon(s.icon), s.name)}${esc(s.name)}</span>`;
+  const slotChip = s => {
+    const cls = s.good ? 'ok' : s.have ? 'meh' : 'no';
+    const tip = s.good ? 'You have this with a good main stat' : s.have ? `You have this piece, but want ${s.want.map(fixStat).join(' / ')}` : `Missing${s.want.length ? ': want ' + s.want.map(fixStat).join(' / ') : ''}`;
+    return `<span class="slot ${cls}" title="${esc(tip)}">${SLOT_LABEL[s.slot]}${s.want.length && !s.good ? ` · ${esc(fixStat(s.want[0]))}` : ''}</span>`;
+  };
+  out.innerHTML = `
+    <h2 class="section-title">Domains to farm <small>ranked by how many of your characters they help</small></h2>
+    ${domains.length ? `<div class="domain-rank">${domains.slice(0, 8).map((d, i) => `<div class="domain-item">
+      <div class="n">${i + 1}</div>
+      <div style="flex:1;min-width:200px"><h4>${esc(d.name)}</h4><div class="muted" style="font-size:13px">${d.sets.map(esc).join(' · ')}</div></div>
+      <div class="avatars" style="margin:0">${d.chars.map(c => `<a href="../characters/character.html?id=${encodeURIComponent(c.id)}" title="${esc(c.name)}">${imgTag(asset(c.icon), c.name)}</a>`).join('')}</div>
+    </div>`).join('')}</div>` : '<div class="empty">None of your characters have a recommended build yet.</div>'}
+
+    <h2 class="section-title">Per character <small>green = good piece, yellow = wrong main stat, red = missing</small></h2>
+    <div class="plan-list">${plans.map(p => `<div class="plan">
+      ${imgTag(asset(p.c.icon), p.c.name)}
+      <div>
+        <h4><a href="../characters/character.html?id=${encodeURIComponent(p.c.id)}" style="text-decoration:none">${esc(p.c.name)}</a>
+          <span class="muted" style="font-weight:400;font-size:13px">Lv. ${p.owned.level} · C${p.owned.constellation || 0}${p.role ? ' · ' + esc(p.role.name) : ''}</span></h4>
+        ${p.role ? `<div class="mats" style="margin:6px 0">${(p.sets || []).map(pill).join('') || (p.option || []).map(k => `<span class="chip">${esc(setLabel(k))}</span>`).join(' ')}</div>
+          ${p.main ? `<div class="slot-grid">${p.slots.map(slotChip).join('')}</div>` : ''}`
+          : '<p class="muted" style="font-size:13px;margin:4px 0">No recommended build available yet.</p>'}
+      </div>
+    </div>`).join('')}</div>`;
+}
+
+/* ---------- characters ---------- */
+// Level caps where you ascend; the talent cap rises with each ascension.
+const CAPS = [20, 40, 50, 60, 70, 80];
+const ascOf = (level, ascended) => CAPS.filter(c => level > c).length + (CAPS.includes(level) && ascended ? 1 : 0);
+const TALENT_CAP = [1, 1, 2, 4, 6, 8, 10];
+let picking = { q: '', el: '' };
+let draft = null; // { id, level, ascended, constellation, talent: {auto, skill, burst}, editing }
+
+function openBuilder(id) {
+  const o = INV.characters[id];
+  const level = o ? o.level : 90;
+  draft = {
+    id, editing: !!o, level, constellation: o ? o.constellation || 0 : 0,
+    ascended: o ? (CAPS.includes(level) && (o.ascension || 0) > CAPS.filter(c => level > c).length) : false,
+    talent: { auto: o?.talent?.auto || 1, skill: o?.talent?.skill || 1, burst: o?.talent?.burst || 1 },
+  };
+  render();
+  setTimeout(() => document.getElementById('builder')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 30);
+}
+
+function builderHtml() {
+  const c = C.byId[draft.id];
+  const asc = ascOf(draft.level, draft.ascended);
+  const cap = TALENT_CAP[asc];
+  const pills = (vals, cur, attr, label = v => v, max = 99) => vals.map(v =>
+    `<button class="pill ${v === cur ? 'on' : ''}" data-${attr}="${v}" ${v > max ? 'disabled style="opacity:.35;cursor:not-allowed"' : ''}>${label(v)}</button>`).join('');
+  const T = [['auto', 'Normal Attack'], ['skill', 'Elemental Skill'], ['burst', 'Elemental Burst']];
+  return `<div class="panel" id="builder" style="margin-bottom:16px;border-color:var(--rose)">
+    <div class="builder">
+      ${imgTag(asset(c.icon), c.name, 'portrait')}
+      <div>
+        <div class="eyebrow">${draft.editing ? 'Edit character' : 'New character'}</div>
+        <h3>${esc(c.name)} <span class="stars" style="font-size:15px">${'★'.repeat(c.rarity)}</span></h3>
+        <div class="muted" style="font-weight:700">${esc(c.element)} · ${esc(c.weapon)} · ${esc(c.nation)}</div>
+
+        <div class="step"><b>Level</b><div class="pills">
+          ${pills([1, 20, 40, 50, 60, 70, 80, 90], draft.level, 'lv')}
+          <input class="inline-input" id="lv-custom" type="number" min="1" max="90" value="${draft.level}" style="width:76px" aria-label="Exact level">
+        </div>
+        ${CAPS.includes(draft.level) ? `<label class="toggle" style="margin-top:8px"><input type="checkbox" id="ascended" ${draft.ascended ? 'checked' : ''}> Already ascended at ${draft.level} (cap is ${draft.level === 20 ? 40 : draft.level + 10})</label>` : ''}
+        <div class="muted" style="font-size:13px;margin-top:4px">Ascension phase ${asc} of 6 · talents can reach level ${cap}</div></div>
+
+        <div class="step"><b>Constellation</b><div class="pills">${pills([0, 1, 2, 3, 4, 5, 6], draft.constellation, 'cons', v => 'C' + v)}</div></div>
+
+        <div class="step"><b>Talents</b>
+          ${T.map(([k, l]) => `<div class="talent-row"><span>${l}</span><div class="pills">${pills([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], draft.talent[k], 'tal-' + k, v => v, cap)}</div></div>`).join('')}
+          <div class="pills" style="margin-top:6px"><span class="muted" style="font-size:13px;font-weight:700">Set all to</span>${[1, 6, 8, 9, 10].map(v => `<button class="pill" data-all="${v}" ${v > cap ? 'disabled style="opacity:.35;cursor:not-allowed"' : ''}>${v}</button>`).join('')}</div>
+        </div>
+
+        <div class="form-row" style="margin-top:18px">
+          <button class="btn primary" id="b-save">♥ ${draft.editing ? 'Save changes' : 'Add to my characters'}</button>
+          <button class="btn" id="b-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function bindBuilder() {
+  const reclamp = () => { const cap = TALENT_CAP[ascOf(draft.level, draft.ascended)]; for (const k in draft.talent) draft.talent[k] = Math.min(draft.talent[k], cap); };
+  document.querySelectorAll('[data-lv]').forEach(b => b.onclick = () => { draft.level = +b.dataset.lv; draft.ascended = draft.level === 90 || draft.ascended && CAPS.includes(draft.level); reclamp(); render(); });
+  $('#lv-custom').onchange = e => { draft.level = num(e.target.value, 1, 90); reclamp(); render(); };
+  if ($('#ascended')) $('#ascended').onchange = e => { draft.ascended = e.target.checked; reclamp(); render(); };
+  document.querySelectorAll('[data-cons]').forEach(b => b.onclick = () => { draft.constellation = +b.dataset.cons; render(); });
+  ['auto', 'skill', 'burst'].forEach(k => document.querySelectorAll(`[data-tal-${k}]`).forEach(b => b.onclick = () => { if (b.disabled) return; draft.talent[k] = +b.getAttribute('data-tal-' + k); render(); }));
+  document.querySelectorAll('[data-all]').forEach(b => b.onclick = () => { if (b.disabled) return; const v = +b.dataset.all; draft.talent = { auto: v, skill: v, burst: v }; render(); });
+  $('#b-cancel').onclick = () => { draft = null; history.replaceState(null, '', location.pathname); render(); };
+  $('#b-save').onclick = () => {
+    INV.characters[draft.id] = { level: draft.level, constellation: draft.constellation, ascension: ascOf(draft.level, draft.ascended), talent: { ...draft.talent } };
+    save(); draft = null; history.replaceState(null, '', location.pathname); render();
+  };
+}
+
+function renderChars(out) {
+  const ownedIds = Object.keys(INV.characters).filter(id => C.byId[id])
+    .sort((a, b) => (INV.characters[b].level - INV.characters[a].level) || charName(a).localeCompare(charName(b)));
+  const pool = C.chars.filter(c => !INV.characters[c.id] &&
+    (!picking.q || c.name.toLowerCase().includes(picking.q.toLowerCase())) && (!picking.el || c.element === picking.el));
+  out.innerHTML = `
+    ${draft ? builderHtml() : `<div class="panel" style="margin-bottom:16px">
+      <h3 style="font-size:19px;margin-bottom:10px">Add a character ✿</h3>
+      <div class="filters" style="margin:0 0 12px">
+        <input id="pick-q" type="search" placeholder="Search…" value="${esc(picking.q)}" autocomplete="off">
+        <div class="pills">${['', ...ELEMENTS].map(e => `<button class="pill ${picking.el === e ? 'on' : ''}" data-el="${e}">${e || 'All'}</button>`).join('')}</div>
+      </div>
+      <div class="picker">${pool.map(c => `<button class="pick r${c.rarity}" data-pick="${c.id}" title="${esc(c.name)}">${imgTag(asset(c.icon), c.name)}<span>${esc(c.name)}</span></button>`).join('') || '<p class="muted">Everyone matching is already in your collection!</p>'}</div>
+    </div>`}
+    <h2 class="section-title">My characters <small>${ownedIds.length} collected</small></h2>
+    ${ownedIds.length ? `<div class="owned-grid">${ownedIds.map(id => { const o = INV.characters[id], c = C.byId[id]; return `<div class="owned-card r${c.rarity}">
+      ${imgTag(asset(c.icon), c.name)}
+      <div><h4><a href="../characters/character.html?id=${encodeURIComponent(id)}" style="text-decoration:none">${esc(c.name)}</a></h4>
+        <div class="meta">Lv. ${o.level} · C${o.constellation || 0} · Talents ${o.talent?.auto || 1}/${o.talent?.skill || 1}/${o.talent?.burst || 1}</div>
+        <div class="acts"><button class="btn small" data-edit="${id}">Edit</button><button class="btn small danger" data-del="${id}">Remove</button></div></div>
+    </div>`; }).join('')}</div>`
+      : `<div class="empty">${mascot()}No characters yet. Pick one above to start your collection!</div>`}`;
+  if (draft) bindBuilder();
+  else {
+    const q = $('#pick-q');
+    q.oninput = () => { picking.q = q.value; renderChars(out); const n = $('#pick-q'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); };
+    out.querySelectorAll('[data-el]').forEach(b => b.onclick = () => { picking.el = b.dataset.el; renderChars(out); });
+    out.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => openBuilder(b.dataset.pick));
+  }
+  out.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openBuilder(b.dataset.edit));
+  out.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    if (!confirm(`Remove ${charName(b.dataset.del)} from your inventory?`)) return;
+    delete INV.characters[b.dataset.del]; save(); render();
+  });
+}
+
+/* ---------- weapons ---------- */
+function renderWeapons(out) {
+  out.innerHTML = `
+    <div class="panel" style="margin-bottom:16px"><div class="form-row">
+      <label class="field" style="flex:1;min-width:220px">Add a weapon
+        <select id="w-id"><option value="">Choose…</option>${WEAPONS.filter(w => w.rarity >= 3).map(w => `<option value="${w.id}">${'★'.repeat(w.rarity)} ${esc(w.name)} (${esc(w.type)})</option>`).join('')}</select></label>
+      <label class="field">Refinement<input id="w-ref" type="number" min="1" max="5" value="1" style="width:70px"></label>
+      <label class="field">Level<input id="w-lv" type="number" min="1" max="90" value="90" style="width:80px"></label>
+      <label class="field">Equipped on<select id="w-loc">${ownedOptions('')}</select></label>
+      <button class="btn primary" id="w-add">Add</button>
+    </div></div>
+    ${INV.weapons.length ? `<div class="panel table-wrap"><table class="inv-table">
+      <thead><tr><th>Weapon</th><th>Refinement</th><th>Level</th><th>Equipped on</th><th></th></tr></thead>
+      <tbody>${INV.weapons.slice().sort((a, b) => (W[b.id]?.rarity || 0) - (W[a.id]?.rarity || 0)).map(x => { const w = W[x.id] || { name: 'Unknown', icon: '' }; return `<tr data-uid="${x.uid}">
+        <td>${imgTag(asset(w.icon), w.name)}${esc(w.name)}</td>
+        <td><input class="inline-input" type="number" min="1" max="5" data-f="refinement" value="${x.refinement}"></td>
+        <td><input class="inline-input" type="number" min="1" max="90" data-f="level" value="${x.level}"></td>
+        <td><select class="inline-input" data-f="location">${ownedOptions(x.location)}</select></td>
+        <td><button class="btn small danger" data-del="${x.uid}">Remove</button></td></tr>`; }).join('')}</tbody></table></div>`
+      : '<div class="empty">No weapons yet.</div>'}`;
+  $('#w-add').onclick = () => {
+    const id = $('#w-id').value;
+    if (!id) return;
+    INV.weapons.push({ uid: newUid(), id, refinement: num($('#w-ref').value, 1, 5), level: num($('#w-lv').value, 1, 90), location: $('#w-loc').value });
+    save(); render();
+  };
+  bindRows(out, INV.weapons, { refinement: [1, 5], level: [1, 90] });
+}
+
+/* ---------- artifacts ---------- */
+function renderArtifacts(out) {
+  const statOpts = slot => MAIN_STATS[slot].map(k => `<option value="${k}">${esc(STAT_LABEL[k])}</option>`).join('');
+  let filter = '';
+  try { filter = sessionStorage.getItem('inv-art-filter') || ''; } catch (e) {}
+  const shown = INV.artifacts.filter(a => !filter || a.set === filter);
+  out.innerHTML = `
+    <div class="panel" style="margin-bottom:16px"><div class="form-row">
+      <label class="field" style="flex:1;min-width:200px">Set
+        <select id="a-set">${SETS.filter(s => s.maxRarity >= 4).map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
+      <label class="field">Piece<select id="a-slot">${SLOTS.map(s => `<option value="${s}">${SLOT_LABEL[s]}</option>`).join('')}</select></label>
+      <label class="field">Main stat<select id="a-main">${statOpts('flower')}</select></label>
+      <label class="field">Rarity<select id="a-rar"><option>5</option><option>4</option></select></label>
+      <label class="field">Level<input id="a-lv" type="number" min="0" max="20" value="20" style="width:70px"></label>
+      <label class="field">Equipped on<select id="a-loc">${ownedOptions('')}</select></label>
+      <button class="btn primary" id="a-add">Add</button>
+    </div></div>
+    <div class="filters"><select id="a-filter"><option value="">All sets (${INV.artifacts.length})</option>${[...new Set(INV.artifacts.map(a => a.set))].map(id => S[id]).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name)).map(s => `<option value="${s.id}" ${s.id === filter ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></div>
+    ${shown.length ? `<div class="panel table-wrap"><table class="inv-table">
+      <thead><tr><th>Set</th><th>Piece</th><th>Main stat</th><th>Level</th><th>Substats</th><th>Equipped on</th><th></th></tr></thead>
+      <tbody>${shown.slice(0, 400).map(a => { const s = S[a.set] || { name: 'Unknown', icon: '' }; return `<tr data-uid="${a.uid}">
+        <td>${imgTag(relicIcon(s.icon), s.name)}${esc(s.name)} <span class="muted">${'★'.repeat(a.rarity || 5)}</span></td>
+        <td>${SLOT_LABEL[a.slot] || esc(a.slot)}</td>
+        <td>${esc(STAT_LABEL[a.mainStat] || a.mainStat)}</td>
+        <td><input class="inline-input" type="number" min="0" max="20" data-f="level" value="${a.level}"></td>
+        <td class="muted" style="font-size:12px">${(a.substats || []).map(x => `${esc(STAT_LABEL[x.key] || x.key)} ${x.value}`).join(', ')}</td>
+        <td><select class="inline-input" data-f="location">${ownedOptions(a.location)}</select></td>
+        <td><button class="btn small danger" data-del="${a.uid}">Remove</button></td></tr>`; }).join('')}</tbody></table>
+      ${shown.length > 400 ? `<p class="muted">Showing 400 of ${shown.length}. Pick a set above to narrow it down.</p>` : ''}</div>`
+      : '<div class="empty">No artifacts yet. Importing a GOOD file is much faster than adding them one by one.</div>'}`;
+  $('#a-slot').onchange = () => { $('#a-main').innerHTML = statOpts($('#a-slot').value); };
+  $('#a-filter').onchange = () => { try { sessionStorage.setItem('inv-art-filter', $('#a-filter').value); } catch (e) {} render(); };
+  $('#a-add').onclick = () => {
+    INV.artifacts.push({ uid: newUid(), set: $('#a-set').value, slot: $('#a-slot').value, mainStat: $('#a-main').value,
+      rarity: num($('#a-rar').value, 1, 5), level: num($('#a-lv').value, 0, 20), location: $('#a-loc').value, substats: [] });
+    save(); render();
+  };
+  bindRows(out, INV.artifacts, { level: [0, 20] });
+}
+
+// Inline edits and remove buttons for the weapon and artifact tables.
+function bindRows(out, list, ranges) {
+  out.querySelectorAll('tr[data-uid] [data-f]').forEach(inp => inp.onchange = () => {
+    const x = list.find(i => i.uid === inp.closest('tr').dataset.uid), f = inp.dataset.f;
+    x[f] = ranges[f] ? num(inp.value, ...ranges[f]) : inp.value;
+    save();
+  });
+  out.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    const i = list.findIndex(x => x.uid === b.dataset.del);
+    if (i >= 0) list.splice(i, 1);
+    save(); render();
+  });
+}
+
+/* ---------- import / export ---------- */
+function renderIO(out) {
+  const total = Object.keys(INV.characters).length + INV.weapons.length + INV.artifacts.length;
+  out.innerHTML = `
+    <div class="two-col">
+      <div class="panel">
+        <h3 style="font-size:18px;margin-bottom:8px">Import</h3>
+        <p class="muted" style="font-size:14px">Drop a <b>GOOD</b> JSON file (from scanners like Inventory Kamera, or exported from Genshin Optimizer), or a backup you exported from this site.</p>
+        <div class="dropzone" id="drop">Drop a .json file here, or <label style="color:var(--gold);cursor:pointer"><input type="file" id="file" accept=".json,application/json" hidden>choose one</label></div>
+        <div id="report" style="margin-top:12px"></div>
+      </div>
+      <div class="panel">
+        <h3 style="font-size:18px;margin-bottom:8px">Backup</h3>
+        <p class="muted" style="font-size:14px">Your inventory lives in this browser only: ${total} items${INV.updated ? `, last changed ${new Date(INV.updated).toLocaleString()}` : ''}. Clearing site data, or opening the site in another browser, starts empty. Export a backup now and then.</p>
+        <div class="form-row"><button class="btn primary" id="export">Export backup</button><button class="btn danger" id="clear">Clear everything</button></div>
+        <h3 style="font-size:16px;margin:18px 0 6px">Getting your data out of the game</h3>
+        <p class="muted" style="font-size:14px">Genshin keeps your account on HoYoverse's servers, not in a local save file, so there's nothing on your computer to read directly. Inventory scanners take screenshots of your in-game menus and turn them into a GOOD file you can import here.</p>
+      </div>
+    </div>`;
+  const handle = async file => {
+    $('#report').innerHTML = '<div class="loading">Reading file…</div>';
+    try {
+      const data = JSON.parse(await file.text());
+      let inv, report;
+      if (data.format === 'TeyvatCodex') { inv = { ...emptyInv(), ...data.inventory }; report = { characters: Object.keys(inv.characters).length, weapons: inv.weapons.length, artifacts: inv.artifacts.length, materials: Object.keys(inv.materials).length, missed: { characters: [], weapons: [], artifacts: [] } }; }
+      else ({ inv, report } = await importGOOD(data));
+      const missedAll = [...report.missed.characters, ...report.missed.weapons, ...new Set(report.missed.artifacts)];
+      $('#report').innerHTML = `<div class="panel" style="background:var(--panel-2)">
+        Found <b>${report.characters}</b> characters, <b>${report.weapons}</b> weapons, <b>${report.artifacts}</b> artifacts and <b>${report.materials}</b> material counts.
+        ${missedAll.length ? `<p class="muted" style="font-size:13px">Couldn't match: ${missedAll.slice(0, 12).map(esc).join(', ')}${missedAll.length > 12 ? '…' : ''}</p>` : ''}
+        <div class="form-row" style="margin-top:10px"><button class="btn primary" id="replace">Replace my inventory</button><button class="btn" id="cancel">Cancel</button></div></div>`;
+      $('#replace').onclick = () => { INV = inv; save(); setTab('plan'); };
+      $('#cancel').onclick = () => { $('#report').innerHTML = ''; };
+    } catch (e) { $('#report').innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+  };
+  $('#file').onchange = e => e.target.files[0] && handle(e.target.files[0]);
+  const drop = $('#drop');
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); e.dataTransfer.files[0] && handle(e.dataTransfer.files[0]); };
+  $('#export').onclick = () => {
+    const blob = new Blob([JSON.stringify({ format: 'TeyvatCodex', version: 1, exported: new Date().toISOString(), inventory: INV }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `teyvat-codex-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  $('#clear').onclick = () => {
+    if (!confirm('Delete your whole inventory from this browser? Export a backup first if you might want it back.')) return;
+    INV = emptyInv(); save(); render();
+  };
+}
+
+function render() {
+  tabs();
+  const out = $('#out');
+  ({ plan: () => renderPlan(out).catch(e => showError(out, e)), chars: () => renderChars(out), weapons: () => renderWeapons(out), artifacts: () => renderArtifacts(out), io: () => renderIO(out) })[tab]();
+}
+
+(async () => {
+  try {
+    const [lookup, weapons, sets] = await Promise.all([charLookup(), getWeapons(), getArtifactSets()]);
+    C = lookup; WEAPONS = weapons; SETS = sets;
+    W = Object.fromEntries(weapons.map(w => [w.id, w])); S = Object.fromEntries(sets.map(s => [s.id, s]));
+    const pre = params.get('add');
+    if (pre && C.byId[pre]) openBuilder(pre); else render();
+  } catch (e) { showError($('#out'), e); }
+})();
+</script>
+</body>
+</html>
